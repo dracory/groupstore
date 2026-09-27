@@ -8,7 +8,6 @@ import (
 
 	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/dromara/carbon/v2"
-	"github.com/spf13/cast"
 )
 
 func (store *store) GroupCount(ctx context.Context, options GroupQueryInterface) (int64, error) {
@@ -18,23 +17,9 @@ func (store *store) GroupCount(ctx context.Context, options GroupQueryInterface)
 
 	options.SetCountOnly(true)
 
-	q, err := store.buildGroupQuery(options)
+	q, err := store.buildGroupQuery(ctx, options)
 	if err != nil {
 		return -1, err
-	}
-
-	if store.isQueryableContext(ctx) {
-		sqlStr := q.ToRawSql().Count()
-		rows, errSelect := store.selectToMapAny(ctx, sqlStr)
-		if errSelect != nil {
-			return -1, errSelect
-		}
-		if len(rows) > 0 {
-			for _, v := range rows[0] {
-				return cast.ToInt64(v), nil
-			}
-		}
-		return 0, nil
 	}
 
 	var count int64
@@ -64,17 +49,9 @@ func (store *store) GroupCreate(ctx context.Context, group GroupInterface) error
 		updateData[k] = v
 	}
 
-	if store.isQueryableContext(ctx) {
-		sqlStr := store.db.Query().Table(store.groupTableName).ToRawSql().Create(updateData)
-		_, err := store.execute(ctx, sqlStr)
-		if err != nil {
-			return err
-		}
-		group.MarkAsNotDirty()
-		return nil
-	}
+	q := store.query(ctx)
 
-	err := store.db.Query().Table(store.groupTableName).Create(updateData)
+	err := q.Table(store.groupTableName).Create(updateData)
 	if err != nil {
 		return err
 	}
@@ -100,17 +77,9 @@ func (store *store) GroupDeleteByID(ctx context.Context, id string) error {
 		return errors.New("group id is empty")
 	}
 
-	if store.isQueryableContext(ctx) {
-		sqlStr := store.db.Query().
-			Table(store.groupTableName).
-			Where(COLUMN_ID+" = ?", id).
-			ToRawSql().Delete()
-		_, err := store.execute(ctx, sqlStr)
-		return err
-	}
+	q := store.query(ctx)
 
-	_, err := store.db.Query().
-		Table(store.groupTableName).
+	_, err := q.Table(store.groupTableName).
 		Where(COLUMN_ID+" = ?", id).
 		Delete()
 
@@ -165,24 +134,15 @@ func (store *store) GroupList(ctx context.Context, query GroupQueryInterface) ([
 		return []GroupInterface{}, errors.New("at group list > group query is nil")
 	}
 
-	q, err := store.buildGroupQuery(query)
+	q, err := store.buildGroupQuery(ctx, query)
 	if err != nil {
 		return []GroupInterface{}, err
 	}
 
 	var rows []map[string]any
-	if store.isQueryableContext(ctx) {
-		sqlStr := q.ToRawSql().Get(&rows)
-		var errSelect error
-		rows, errSelect = store.selectToMapAny(ctx, sqlStr)
-		if errSelect != nil {
-			return []GroupInterface{}, errSelect
-		}
-	} else {
-		err = q.Get(&rows)
-		if err != nil {
-			return []GroupInterface{}, err
-		}
+	err = q.Get(&rows)
+	if err != nil {
+		return []GroupInterface{}, err
 	}
 
 	list := make([]GroupInterface, 0, len(rows))
@@ -250,21 +210,9 @@ func (store *store) GroupUpdate(ctx context.Context, group GroupInterface) error
 		updateData[k] = v
 	}
 
-	if store.isQueryableContext(ctx) {
-		sqlStr := store.db.Query().
-			Table(store.groupTableName).
-			Where(COLUMN_ID+" = ?", group.ID()).
-			ToRawSql().Update(updateData)
-		_, err := store.execute(ctx, sqlStr)
-		if err != nil {
-			return err
-		}
-		group.MarkAsNotDirty()
-		return nil
-	}
+	q := store.query(ctx)
 
-	_, err := store.db.Query().
-		Table(store.groupTableName).
+	_, err := q.Table(store.groupTableName).
 		Where(COLUMN_ID+" = ?", group.ID()).
 		Update(updateData)
 
@@ -277,7 +225,7 @@ func (store *store) GroupUpdate(ctx context.Context, group GroupInterface) error
 	return nil
 }
 
-func (store *store) buildGroupQuery(options GroupQueryInterface) (contractsorm.Query, error) {
+func (store *store) buildGroupQuery(ctx context.Context, options GroupQueryInterface) (contractsorm.Query, error) {
 	if options == nil {
 		return nil, errors.New("group options is nil")
 	}
@@ -286,7 +234,7 @@ func (store *store) buildGroupQuery(options GroupQueryInterface) (contractsorm.Q
 		return nil, err
 	}
 
-	q := store.db.Query().Table(store.groupTableName)
+	q := store.query(ctx).Table(store.groupTableName)
 
 	if len(options.Columns()) > 0 {
 		q = q.Select(options.Columns())

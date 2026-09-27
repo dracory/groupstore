@@ -8,7 +8,6 @@ import (
 
 	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/dromara/carbon/v2"
-	"github.com/spf13/cast"
 )
 
 func (store *store) RelationCount(ctx context.Context, options RelationQueryInterface) (int64, error) {
@@ -18,23 +17,9 @@ func (store *store) RelationCount(ctx context.Context, options RelationQueryInte
 
 	options.SetCountOnly(true)
 
-	q, err := store.buildRelationQuery(options)
+	q, err := store.buildRelationQuery(ctx, options)
 	if err != nil {
 		return -1, err
-	}
-
-	if store.isQueryableContext(ctx) {
-		sqlStr := q.ToRawSql().Count()
-		rows, errSelect := store.selectToMapAny(ctx, sqlStr)
-		if errSelect != nil {
-			return -1, errSelect
-		}
-		if len(rows) > 0 {
-			for _, v := range rows[0] {
-				return cast.ToInt64(v), nil
-			}
-		}
-		return 0, nil
 	}
 
 	var count int64
@@ -91,17 +76,9 @@ func (store *store) RelationCreate(ctx context.Context, relation RelationInterfa
 		updateData[k] = v
 	}
 
-	if store.isQueryableContext(ctx) {
-		sqlStr := store.db.Query().Table(store.groupEntityRelationTableName).ToRawSql().Create(updateData)
-		_, err := store.execute(ctx, sqlStr)
-		if err != nil {
-			return err
-		}
-		relation.MarkAsNotDirty()
-		return nil
-	}
+	q := store.query(ctx)
 
-	err = store.db.Query().Table(store.groupEntityRelationTableName).Create(updateData)
+	err = q.Table(store.groupEntityRelationTableName).Create(updateData)
 	if err != nil {
 		return err
 	}
@@ -127,17 +104,9 @@ func (store *store) RelationDeleteByID(ctx context.Context, id string) error {
 		return errors.New("relation id is empty")
 	}
 
-	if store.isQueryableContext(ctx) {
-		sqlStr := store.db.Query().
-			Table(store.groupEntityRelationTableName).
-			Where(COLUMN_ID+" = ?", id).
-			ToRawSql().Delete()
-		_, err := store.execute(ctx, sqlStr)
-		return err
-	}
+	q := store.query(ctx)
 
-	_, err := store.db.Query().
-		Table(store.groupEntityRelationTableName).
+	_, err := q.Table(store.groupEntityRelationTableName).
 		Where(COLUMN_ID+" = ?", id).
 		Delete()
 
@@ -209,24 +178,15 @@ func (store *store) RelationList(ctx context.Context, query RelationQueryInterfa
 		return []RelationInterface{}, errors.New("at relation list > relation query is nil")
 	}
 
-	q, err := store.buildRelationQuery(query)
+	q, err := store.buildRelationQuery(ctx, query)
 	if err != nil {
 		return []RelationInterface{}, err
 	}
 
 	var rows []map[string]any
-	if store.isQueryableContext(ctx) {
-		sqlStr := q.ToRawSql().Get(&rows)
-		var errSelect error
-		rows, errSelect = store.selectToMapAny(ctx, sqlStr)
-		if errSelect != nil {
-			return []RelationInterface{}, errSelect
-		}
-	} else {
-		err = q.Get(&rows)
-		if err != nil {
-			return []RelationInterface{}, err
-		}
+	err = q.Get(&rows)
+	if err != nil {
+		return []RelationInterface{}, err
 	}
 
 	list := make([]RelationInterface, 0, len(rows))
@@ -294,21 +254,9 @@ func (store *store) RelationUpdate(ctx context.Context, relation RelationInterfa
 		updateData[k] = v
 	}
 
-	if store.isQueryableContext(ctx) {
-		sqlStr := store.db.Query().
-			Table(store.groupEntityRelationTableName).
-			Where(COLUMN_ID+" = ?", relation.ID()).
-			ToRawSql().Update(updateData)
-		_, err := store.execute(ctx, sqlStr)
-		if err != nil {
-			return err
-		}
-		relation.MarkAsNotDirty()
-		return nil
-	}
+	q := store.query(ctx)
 
-	_, err := store.db.Query().
-		Table(store.groupEntityRelationTableName).
+	_, err := q.Table(store.groupEntityRelationTableName).
 		Where(COLUMN_ID+" = ?", relation.ID()).
 		Update(updateData)
 
@@ -321,7 +269,7 @@ func (store *store) RelationUpdate(ctx context.Context, relation RelationInterfa
 	return nil
 }
 
-func (store *store) buildRelationQuery(options RelationQueryInterface) (contractsorm.Query, error) {
+func (store *store) buildRelationQuery(ctx context.Context, options RelationQueryInterface) (contractsorm.Query, error) {
 	if options == nil {
 		return nil, errors.New("relation options is nil")
 	}
@@ -330,7 +278,7 @@ func (store *store) buildRelationQuery(options RelationQueryInterface) (contract
 		return nil, err
 	}
 
-	q := store.db.Query().Table(store.groupEntityRelationTableName)
+	q := store.query(ctx).Table(store.groupEntityRelationTableName)
 
 	if len(options.Columns()) > 0 {
 		q = q.Select(options.Columns())

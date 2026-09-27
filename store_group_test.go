@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/dracory/neat/database/schema/constants"
-	"github.com/gouniverse/base/database"
 )
 
 func TestStoreGroupCount(t *testing.T) {
@@ -231,12 +230,12 @@ func TestStoreGroupFindByHandle(t *testing.T) {
 		t.Fatal("unexpected error:", err)
 	}
 
-	err = store.GroupCreate(database.Context(context.Background(), store.DB()), group)
+	err = store.GroupCreate(context.Background(), group)
 	if err != nil {
 		t.Error("unexpected error:", err)
 	}
 
-	groupFound, errFind := store.GroupFindByHandle(database.Context(context.Background(), store.DB()), group.Handle())
+	groupFound, errFind := store.GroupFindByHandle(context.Background(), group.Handle())
 
 	if errFind != nil {
 		t.Fatal("unexpected error:", errFind)
@@ -303,7 +302,7 @@ func TestStoreGroupFindByID(t *testing.T) {
 		t.Fatal("unexpected error:", err)
 	}
 
-	ctx := database.Context(context.Background(), store.DB())
+	ctx := context.Background()
 	err = store.GroupCreate(ctx, group)
 	if err != nil {
 		t.Error("unexpected error:", err)

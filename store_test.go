@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gouniverse/base/database"
+	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/gouniverse/utils"
 	_ "modernc.org/sqlite"
 )
@@ -60,17 +60,17 @@ func initStore(filepath string) (StoreInterface, error) {
 }
 
 func TestStoreWithTx(t *testing.T) {
-	store, err := initStore("test_store_with_tx.db")
+	st, err := initStore("test_store_with_tx.db")
 
 	if err != nil {
 		t.Fatal("unexpected error:", err)
 	}
 
-	if store == nil {
+	if st == nil {
 		t.Fatal("unexpected nil store")
 	}
 
-	db := store.DB()
+	db := st.DB()
 
 	if db == nil {
 		t.Fatal("unexpected nil db")
@@ -82,17 +82,7 @@ func TestStoreWithTx(t *testing.T) {
 		}
 	}()
 
-	tx, err := db.Begin()
-
-	if err != nil {
-		t.Fatal("unexpected error:", err)
-	}
-
-	if tx == nil {
-		t.Fatal("unexpected nil tx")
-	}
-
-	txCtx := database.Context(context.Background(), tx)
+	s := st.(*store)
 
 	// create group
 	group := NewGroup().
@@ -100,37 +90,39 @@ func TestStoreWithTx(t *testing.T) {
 		SetHandle("GROUP_HANDLE").
 		SetTitle("GROUP_TITLE")
 
-	err = store.GroupCreate(txCtx, group)
+	err = s.db.Transaction(func(tx contractsorm.Query) error {
+		txCtx := ContextWithTx(context.Background(), tx)
+
+		err = st.GroupCreate(txCtx, group)
+		if err != nil {
+			return err
+		}
+
+		// update group
+		group.SetTitle("GROUP_TITLE_2")
+		err = st.GroupUpdate(txCtx, group)
+		if err != nil {
+			return err
+		}
+
+		// check group outside transaction (must be nil)
+		groupFound, errFind := st.GroupFindByID(context.Background(), group.ID())
+		if errFind != nil {
+			return errFind
+		}
+		if groupFound != nil {
+			return errors.New("Group MUST be nil, as transaction not committed")
+		}
+
+		return nil
+	})
 
 	if err != nil {
 		t.Fatal("unexpected error:", err)
 	}
 
-	// update group
-	group.SetTitle("GROUP_TITLE_2")
-	err = store.GroupUpdate(txCtx, group)
-
-	if err != nil {
-		t.Fatal("unexpected error:", err)
-	}
-
-	// check group
-	groupFound, errFind := store.GroupFindByID(database.Context(context.Background(), db), group.ID())
-
-	if errFind != nil {
-		t.Fatal("unexpected error:", errFind)
-	}
-
-	if groupFound != nil {
-		t.Fatal("Group MUST be nil, as transaction not committed")
-	}
-
-	if err := tx.Commit(); err != nil {
-		t.Fatal("unexpected error:", err)
-	}
-
-	// check group
-	groupFound, errFind = store.GroupFindByID(database.Context(context.Background(), db), group.ID())
+	// check group after commit
+	groupFound, errFind := st.GroupFindByID(context.Background(), group.ID())
 
 	if errFind != nil {
 		t.Fatal("unexpected error:", errFind)
