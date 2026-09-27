@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dracory/neat/database/schema/constants"
 	"github.com/gouniverse/base/database"
-	"github.com/gouniverse/sb"
 )
 
 func TestStoreRelationCount(t *testing.T) {
@@ -468,7 +468,7 @@ func TestStoreEntityGroupSoftDelete(t *testing.T) {
 		t.Fatal("unexpected error:", err)
 	}
 
-	if entityGroup.SoftDeletedAt() == sb.MAX_DATETIME {
+	if entityGroup.SoftDeletedAt() == constants.MaxSoftDeletedAtDefault {
 		t.Fatal("EntityGroup MUST be soft deleted")
 	}
 
@@ -495,7 +495,7 @@ func TestStoreEntityGroupSoftDelete(t *testing.T) {
 		t.Fatal("EntityGroup MUST be soft deleted")
 	}
 
-	if strings.Contains(entityGroupFindWithDeleted[0].SoftDeletedAt(), sb.MAX_DATETIME) {
+	if strings.Contains(entityGroupFindWithDeleted[0].SoftDeletedAt(), constants.MaxSoftDeletedAtDefault) {
 		t.Fatal("EntityGroup MUST be soft deleted", entityGroup.SoftDeletedAt())
 	}
 
@@ -534,7 +534,7 @@ func TestStoreEntityGroupSoftDeleteByID(t *testing.T) {
 		t.Fatal("unexpected error:", err)
 	}
 
-	if entityGroup.SoftDeletedAt() != sb.MAX_DATETIME {
+	if entityGroup.SoftDeletedAt() != constants.MaxSoftDeletedAtDefault {
 		t.Fatal("EntityGroup MUST NOT be soft deleted, as it was soft deleted by ID")
 	}
 
@@ -562,7 +562,7 @@ func TestStoreEntityGroupSoftDeleteByID(t *testing.T) {
 		t.Fatal("EntityGroup MUST be soft deleted")
 	}
 
-	if strings.Contains(entityGroupFindWithDeleted[0].SoftDeletedAt(), sb.MAX_DATETIME) {
+	if strings.Contains(entityGroupFindWithDeleted[0].SoftDeletedAt(), constants.MaxSoftDeletedAtDefault) {
 		t.Fatal("EntityGroup MUST be soft deleted", entityGroup.SoftDeletedAt())
 	}
 
