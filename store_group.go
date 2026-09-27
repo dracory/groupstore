@@ -3,55 +3,38 @@ package groupstore
 import (
 	"context"
 	"errors"
-	"strconv"
+	"fmt"
 	"strings"
 
-	"github.com/doug-martin/goqu/v9"
+	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/dromara/carbon/v2"
-	"github.com/gouniverse/base/database"
-	"github.com/gouniverse/sb"
-	"github.com/samber/lo"
-	"github.com/spf13/cast"
 )
 
 func (store *store) GroupCount(ctx context.Context, options GroupQueryInterface) (int64, error) {
+	if ctx == nil {
+		return 0, errors.New("ctx is nil")
+	}
+
 	options.SetCountOnly(true)
 
-	q, _, err := store.groupSelectQuery(options)
-
-	sqlStr, params, errSql := q.Prepared(true).
-		Limit(1).
-		Select(goqu.COUNT(goqu.Star()).As("count")).
-		ToSQL()
-
-	if errSql != nil {
-		return -1, nil
-	}
-
-	store.logSql("select", sqlStr, params...)
-
-	mapped, err := database.SelectToMapString(store.toQuerableContext(ctx), sqlStr, params...)
+	q, err := store.buildGroupQuery(options)
 	if err != nil {
 		return -1, err
 	}
 
-	if len(mapped) < 1 {
-		return -1, nil
-	}
-
-	countStr := mapped[0]["count"]
-
-	i, err := strconv.ParseInt(countStr, 10, 64)
-
+	var count int64
+	err = q.Count(&count)
 	if err != nil {
 		return -1, err
-
 	}
 
-	return i, nil
+	return count, nil
 }
 
 func (store *store) GroupCreate(ctx context.Context, group GroupInterface) error {
+	if ctx == nil {
+		return errors.New("ctx is nil")
+	}
 	if group == nil {
 		return errors.New("group is nil")
 	}
@@ -61,24 +44,12 @@ func (store *store) GroupCreate(ctx context.Context, group GroupInterface) error
 
 	data := group.Data()
 
-	sqlStr, params, errSql := goqu.Dialect(store.dbDriverName).
-		Insert(store.groupTableName).
-		Prepared(true).
-		Rows(data).
-		ToSQL()
-
-	if errSql != nil {
-		return errSql
+	updateData := make(map[string]any)
+	for k, v := range data {
+		updateData[k] = v
 	}
 
-	store.logSql("insert", sqlStr, params...)
-
-	if store.db == nil {
-		return errors.New("groupstore: database is nil")
-	}
-
-	_, err := database.Execute(store.toQuerableContext(ctx), sqlStr, params...)
-
+	err := store.db.Query().Table(store.groupTableName).Create(updateData)
 	if err != nil {
 		return err
 	}
@@ -97,23 +68,17 @@ func (store *store) GroupDelete(ctx context.Context, group GroupInterface) error
 }
 
 func (store *store) GroupDeleteByID(ctx context.Context, id string) error {
+	if ctx == nil {
+		return errors.New("ctx is nil")
+	}
 	if id == "" {
 		return errors.New("group id is empty")
 	}
 
-	sqlStr, params, errSql := goqu.Dialect(store.dbDriverName).
-		Delete(store.groupTableName).
-		Prepared(true).
-		Where(goqu.C(COLUMN_ID).Eq(id)).
-		ToSQL()
-
-	if errSql != nil {
-		return errSql
-	}
-
-	store.logSql("delete", sqlStr, params...)
-
-	_, err := database.Execute(store.toQuerableContext(ctx), sqlStr, params...)
+	_, err := store.db.Query().
+		Table(store.groupTableName).
+		Where(COLUMN_ID+" = ?", id).
+		Delete()
 
 	return err
 }
@@ -159,36 +124,42 @@ func (store *store) GroupFindByID(ctx context.Context, id string) (group GroupIn
 }
 
 func (store *store) GroupList(ctx context.Context, query GroupQueryInterface) ([]GroupInterface, error) {
+	if ctx == nil {
+		return []GroupInterface{}, errors.New("ctx is nil")
+	}
 	if query == nil {
 		return []GroupInterface{}, errors.New("at group list > group query is nil")
 	}
 
-	q, columns, err := store.groupSelectQuery(query)
-
-	sqlStr, sqlParams, errSql := q.Prepared(true).Select(columns...).ToSQL()
-
-	if errSql != nil {
-		return []GroupInterface{}, nil
-	}
-
-	store.logSql("select", sqlStr, sqlParams...)
-
-	if store.db == nil {
-		return []GroupInterface{}, errors.New("groupstore: database is nil")
-	}
-
-	modelMaps, err := database.SelectToMapString(store.toQuerableContext(ctx), sqlStr, sqlParams...)
-
+	q, err := store.buildGroupQuery(query)
 	if err != nil {
 		return []GroupInterface{}, err
 	}
 
-	list := []GroupInterface{}
+	var rows []map[string]any
+	err = q.Get(&rows)
+	if err != nil {
+		return []GroupInterface{}, err
+	}
 
-	lo.ForEach(modelMaps, func(modelMap map[string]string, index int) {
-		model := NewGroupFromExistingData(modelMap)
-		list = append(list, model)
-	})
+	list := make([]GroupInterface, 0, len(rows))
+	for _, row := range rows {
+		data := make(map[string]string)
+		for k, v := range row {
+			if v == nil {
+				data[k] = ""
+				continue
+			}
+			if s, ok := v.(string); ok {
+				data[k] = s
+			} else if b, ok := v.([]byte); ok {
+				data[k] = string(b)
+			} else {
+				data[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		list = append(list, NewGroupFromExistingData(data))
+	}
 
 	return list, nil
 }
@@ -214,6 +185,9 @@ func (store *store) GroupSoftDeleteByID(ctx context.Context, id string) error {
 }
 
 func (store *store) GroupUpdate(ctx context.Context, group GroupInterface) error {
+	if ctx == nil {
+		return errors.New("ctx is nil")
+	}
 	if group == nil {
 		return errors.New("at group update > group is nil")
 	}
@@ -228,107 +202,115 @@ func (store *store) GroupUpdate(ctx context.Context, group GroupInterface) error
 		return nil
 	}
 
-	sqlStr, params, errSql := goqu.Dialect(store.dbDriverName).
-		Update(store.groupTableName).
-		Prepared(true).
-		Set(dataChanged).
-		Where(goqu.C(COLUMN_ID).Eq(group.ID())).
-		ToSQL()
-
-	if errSql != nil {
-		return errSql
+	updateData := make(map[string]any)
+	for k, v := range dataChanged {
+		updateData[k] = v
 	}
 
-	store.logSql("update", sqlStr, params...)
+	_, err := store.db.Query().
+		Table(store.groupTableName).
+		Where(COLUMN_ID+" = ?", group.ID()).
+		Update(updateData)
 
-	if store.db == nil {
-		return errors.New("groupstore: database is nil")
+	if err != nil {
+		return err
 	}
-
-	_, err := database.Execute(store.toQuerableContext(ctx), sqlStr, params...)
 
 	group.MarkAsNotDirty()
 
-	return err
+	return nil
 }
 
-func (store *store) groupSelectQuery(options GroupQueryInterface) (selectDataset *goqu.SelectDataset, columns []any, err error) {
+func (store *store) buildGroupQuery(options GroupQueryInterface) (contractsorm.Query, error) {
 	if options == nil {
-		return nil, nil, errors.New("group options is nil")
+		return nil, errors.New("group options is nil")
 	}
 
 	if err := options.Validate(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	q := goqu.Dialect(store.dbDriverName).From(store.groupTableName)
+	q := store.db.Query().Table(store.groupTableName)
+
+	if len(options.Columns()) > 0 {
+		q = q.Select(options.Columns())
+	}
 
 	if options.HasID() {
-		q = q.Where(goqu.C(COLUMN_ID).Eq(options.ID()))
+		q = q.Where(COLUMN_ID+" = ?", options.ID())
 	}
 
 	if options.HasIDIn() {
-		q = q.Where(goqu.C(COLUMN_ID).In(options.IDIn()))
+		inClause := COLUMN_ID + " IN ("
+		placeholders := make([]any, 0, len(options.IDIn()))
+		for i, id := range options.IDIn() {
+			if i > 0 {
+				inClause += ", "
+			}
+			inClause += "?"
+			placeholders = append(placeholders, id)
+		}
+		inClause += ")"
+		q = q.Where(inClause, placeholders...)
 	}
 
 	if options.HasStatus() {
-		q = q.Where(goqu.C(COLUMN_STATUS).Eq(options.Status()))
+		q = q.Where(COLUMN_STATUS+" = ?", options.Status())
 	}
 
 	if options.HasStatusIn() {
-		q = q.Where(goqu.C(COLUMN_STATUS).In(options.StatusIn()))
+		inClause := COLUMN_STATUS + " IN ("
+		placeholders := make([]any, 0, len(options.StatusIn()))
+		for i, status := range options.StatusIn() {
+			if i > 0 {
+				inClause += ", "
+			}
+			inClause += "?"
+			placeholders = append(placeholders, status)
+		}
+		inClause += ")"
+		q = q.Where(inClause, placeholders...)
 	}
 
 	if options.HasHandle() {
-		q = q.Where(goqu.C(COLUMN_HANDLE).Eq(options.Handle()))
+		q = q.Where(COLUMN_HANDLE+" = ?", options.Handle())
 	}
 
 	if options.HasTitleLike() {
-		q = q.Where(goqu.C(COLUMN_TITLE).ILike(`%` + options.TitleLike() + `%`))
+		q = q.Where(COLUMN_TITLE+" LIKE ?", "%"+options.TitleLike()+"%")
 	}
 
 	if options.HasCreatedAtGte() && options.HasCreatedAtLte() {
-		q = q.Where(
-			goqu.C(COLUMN_CREATED_AT).Gte(options.CreatedAtGte()),
-			goqu.C(COLUMN_CREATED_AT).Lte(options.CreatedAtLte()),
-		)
+		q = q.Where(COLUMN_CREATED_AT+" >= ? AND "+COLUMN_CREATED_AT+" <= ?", options.CreatedAtGte(), options.CreatedAtLte())
 	} else if options.HasCreatedAtGte() {
-		q = q.Where(goqu.C(COLUMN_CREATED_AT).Gte(options.CreatedAtGte()))
+		q = q.Where(COLUMN_CREATED_AT+" >= ?", options.CreatedAtGte())
 	} else if options.HasCreatedAtLte() {
-		q = q.Where(goqu.C(COLUMN_CREATED_AT).Lte(options.CreatedAtLte()))
+		q = q.Where(COLUMN_CREATED_AT+" <= ?", options.CreatedAtLte())
 	}
 
 	if !options.IsCountOnly() {
 		if options.HasLimit() {
-			q = q.Limit(cast.ToUint(options.Limit()))
+			q = q.Limit(options.Limit())
 		}
 
 		if options.HasOffset() {
-			q = q.Offset(cast.ToUint(options.Offset()))
+			q = q.Offset(options.Offset())
 		}
 	}
 
 	if options.HasOrderBy() {
-		sort := lo.Ternary(options.HasSortDirection(), options.SortDirection(), sb.DESC)
-		if strings.EqualFold(sort, sb.ASC) {
-			q = q.Order(goqu.I(options.OrderBy()).Asc())
-		} else {
-			q = q.Order(goqu.I(options.OrderBy()).Desc())
+		sort := "DESC"
+		if options.HasSortDirection() && strings.EqualFold(options.SortDirection(), "ASC") {
+			sort = "ASC"
 		}
-	}
-
-	columns = []any{}
-
-	for _, column := range options.Columns() {
-		columns = append(columns, column)
+		q = q.OrderBy(options.OrderBy(), sort)
 	}
 
 	if options.SoftDeletedIncluded() {
-		return q, columns, nil // soft deleted groups requested specifically
+		q = q.WithSoftDeleted()
+	} else {
+		q = q.Where(COLUMN_SOFT_DELETED_AT+" > ?", carbon.Now(carbon.UTC).ToDateTimeString())
 	}
 
-	softDeleted := goqu.C(COLUMN_SOFT_DELETED_AT).
-		Gt(carbon.Now(carbon.UTC).ToDateTimeString())
-
-	return q.Where(softDeleted), columns, nil
+	return q, nil
 }

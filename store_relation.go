@@ -3,55 +3,38 @@ package groupstore
 import (
 	"context"
 	"errors"
-	"strconv"
+	"fmt"
 	"strings"
 
-	"github.com/doug-martin/goqu/v9"
+	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/dromara/carbon/v2"
-	"github.com/gouniverse/base/database"
-	"github.com/gouniverse/sb"
-	"github.com/samber/lo"
-	"github.com/spf13/cast"
 )
 
 func (store *store) RelationCount(ctx context.Context, options RelationQueryInterface) (int64, error) {
+	if ctx == nil {
+		return 0, errors.New("ctx is nil")
+	}
+
 	options.SetCountOnly(true)
 
-	q, _, err := store.relationSelectQuery(options)
-
-	sqlStr, params, errSql := q.Prepared(true).
-		Limit(1).
-		Select(goqu.COUNT(goqu.Star()).As("count")).
-		ToSQL()
-
-	if errSql != nil {
-		return -1, nil
-	}
-
-	store.logSql("select", sqlStr, params...)
-
-	mapped, err := database.SelectToMapString(store.toQuerableContext(ctx), sqlStr, params...)
+	q, err := store.buildRelationQuery(options)
 	if err != nil {
 		return -1, err
 	}
 
-	if len(mapped) < 1 {
-		return -1, nil
-	}
-
-	countStr := mapped[0]["count"]
-
-	i, err := strconv.ParseInt(countStr, 10, 64)
-
+	var count int64
+	err = q.Count(&count)
 	if err != nil {
 		return -1, err
-
 	}
 
-	return i, nil
+	return count, nil
 }
 
 func (store *store) RelationCreate(ctx context.Context, relation RelationInterface) error {
+	if ctx == nil {
+		return errors.New("ctx is nil")
+	}
 	if relation == nil {
 		return errors.New("groupstore > RelationCreate. relation is nil")
 	}
@@ -88,24 +71,12 @@ func (store *store) RelationCreate(ctx context.Context, relation RelationInterfa
 
 	data := relation.Data()
 
-	sqlStr, params, errSql := goqu.Dialect(store.dbDriverName).
-		Insert(store.groupEntityRelationTableName).
-		Prepared(true).
-		Rows(data).
-		ToSQL()
-
-	if errSql != nil {
-		return errSql
+	updateData := make(map[string]any)
+	for k, v := range data {
+		updateData[k] = v
 	}
 
-	store.logSql("insert", sqlStr, params...)
-
-	if store.db == nil {
-		return errors.New("entityGroupstore: database is nil")
-	}
-
-	_, err = database.Execute(store.toQuerableContext(ctx), sqlStr, params...)
-
+	err = store.db.Query().Table(store.groupEntityRelationTableName).Create(updateData)
 	if err != nil {
 		return err
 	}
@@ -124,23 +95,17 @@ func (store *store) RelationDelete(ctx context.Context, relation RelationInterfa
 }
 
 func (store *store) RelationDeleteByID(ctx context.Context, id string) error {
+	if ctx == nil {
+		return errors.New("ctx is nil")
+	}
 	if id == "" {
 		return errors.New("relation id is empty")
 	}
 
-	sqlStr, params, errSql := goqu.Dialect(store.dbDriverName).
-		Delete(store.groupEntityRelationTableName).
-		Prepared(true).
-		Where(goqu.C(COLUMN_ID).Eq(id)).
-		ToSQL()
-
-	if errSql != nil {
-		return errSql
-	}
-
-	store.logSql("delete", sqlStr, params...)
-
-	_, err := database.Execute(store.toQuerableContext(ctx), sqlStr, params...)
+	_, err := store.db.Query().
+		Table(store.groupEntityRelationTableName).
+		Where(COLUMN_ID+" = ?", id).
+		Delete()
 
 	return err
 }
@@ -203,36 +168,42 @@ func (store *store) RelationFindByID(ctx context.Context, id string) (relation R
 }
 
 func (store *store) RelationList(ctx context.Context, query RelationQueryInterface) ([]RelationInterface, error) {
+	if ctx == nil {
+		return []RelationInterface{}, errors.New("ctx is nil")
+	}
 	if query == nil {
 		return []RelationInterface{}, errors.New("at relation list > relation query is nil")
 	}
 
-	q, columns, err := store.relationSelectQuery(query)
-
-	sqlStr, sqlParams, errSql := q.Prepared(true).Select(columns...).ToSQL()
-
-	if errSql != nil {
-		return []RelationInterface{}, nil
-	}
-
-	store.logSql("select", sqlStr, sqlParams...)
-
-	if store.db == nil {
-		return []RelationInterface{}, errors.New("entityGroupstore: database is nil")
-	}
-
-	modelMaps, err := database.SelectToMapString(store.toQuerableContext(ctx), sqlStr, sqlParams...)
-
+	q, err := store.buildRelationQuery(query)
 	if err != nil {
 		return []RelationInterface{}, err
 	}
 
-	list := []RelationInterface{}
+	var rows []map[string]any
+	err = q.Get(&rows)
+	if err != nil {
+		return []RelationInterface{}, err
+	}
 
-	lo.ForEach(modelMaps, func(modelMap map[string]string, index int) {
-		model := NewGroupEntityRelationFromExistingData(modelMap)
-		list = append(list, model)
-	})
+	list := make([]RelationInterface, 0, len(rows))
+	for _, row := range rows {
+		data := make(map[string]string)
+		for k, v := range row {
+			if v == nil {
+				data[k] = ""
+				continue
+			}
+			if s, ok := v.(string); ok {
+				data[k] = s
+			} else if b, ok := v.([]byte); ok {
+				data[k] = string(b)
+			} else {
+				data[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		list = append(list, NewGroupEntityRelationFromExistingData(data))
+	}
 
 	return list, nil
 }
@@ -258,6 +229,9 @@ func (store *store) RelationSoftDeleteByID(ctx context.Context, id string) error
 }
 
 func (store *store) RelationUpdate(ctx context.Context, relation RelationInterface) error {
+	if ctx == nil {
+		return errors.New("ctx is nil")
+	}
 	if relation == nil {
 		return errors.New("at relation update > relation is nil")
 	}
@@ -272,103 +246,101 @@ func (store *store) RelationUpdate(ctx context.Context, relation RelationInterfa
 		return nil
 	}
 
-	sqlStr, params, errSql := goqu.Dialect(store.dbDriverName).
-		Update(store.groupEntityRelationTableName).
-		Prepared(true).
-		Set(dataChanged).
-		Where(goqu.C(COLUMN_ID).Eq(relation.ID())).
-		ToSQL()
-
-	if errSql != nil {
-		return errSql
+	updateData := make(map[string]any)
+	for k, v := range dataChanged {
+		updateData[k] = v
 	}
 
-	store.logSql("update", sqlStr, params...)
+	_, err := store.db.Query().
+		Table(store.groupEntityRelationTableName).
+		Where(COLUMN_ID+" = ?", relation.ID()).
+		Update(updateData)
 
-	if store.db == nil {
-		return errors.New("entityGroupstore: database is nil")
+	if err != nil {
+		return err
 	}
-
-	_, err := database.Execute(store.toQuerableContext(ctx), sqlStr, params...)
 
 	relation.MarkAsNotDirty()
 
-	return err
+	return nil
 }
 
-func (store *store) relationSelectQuery(options RelationQueryInterface) (selectDataset *goqu.SelectDataset, columns []any, err error) {
+func (store *store) buildRelationQuery(options RelationQueryInterface) (contractsorm.Query, error) {
 	if options == nil {
-		return nil, nil, errors.New("relation options is nil")
+		return nil, errors.New("relation options is nil")
 	}
 
 	if err := options.Validate(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	q := goqu.Dialect(store.dbDriverName).From(store.groupEntityRelationTableName)
+	q := store.db.Query().Table(store.groupEntityRelationTableName)
+
+	if len(options.Columns()) > 0 {
+		q = q.Select(options.Columns())
+	}
 
 	if options.HasEntityID() {
-		q = q.Where(goqu.C(COLUMN_ENTITY_ID).Eq(options.EntityID()))
+		q = q.Where(COLUMN_ENTITY_ID+" = ?", options.EntityID())
 	}
 
 	if options.HasEntityType() {
-		q = q.Where(goqu.C(COLUMN_ENTITY_TYPE).Eq(options.EntityType()))
+		q = q.Where(COLUMN_ENTITY_TYPE+" = ?", options.EntityType())
 	}
 
 	if options.HasID() {
-		q = q.Where(goqu.C(COLUMN_ID).Eq(options.ID()))
+		q = q.Where(COLUMN_ID+" = ?", options.ID())
 	}
 
 	if options.HasIDIn() {
-		q = q.Where(goqu.C(COLUMN_ID).In(options.IDIn()))
+		inClause := COLUMN_ID + " IN ("
+		placeholders := make([]any, 0, len(options.IDIn()))
+		for i, id := range options.IDIn() {
+			if i > 0 {
+				inClause += ", "
+			}
+			inClause += "?"
+			placeholders = append(placeholders, id)
+		}
+		inClause += ")"
+		q = q.Where(inClause, placeholders...)
 	}
 
 	if options.HasGroupID() {
-		q = q.Where(goqu.C(COLUMN_GROUP_ID).Eq(options.GroupID()))
+		q = q.Where(COLUMN_GROUP_ID+" = ?", options.GroupID())
 	}
 
 	if options.HasCreatedAtGte() && options.HasCreatedAtLte() {
-		q = q.Where(
-			goqu.C(COLUMN_CREATED_AT).Gte(options.CreatedAtGte()),
-			goqu.C(COLUMN_CREATED_AT).Lte(options.CreatedAtLte()),
-		)
+		q = q.Where(COLUMN_CREATED_AT+" >= ? AND "+COLUMN_CREATED_AT+" <= ?", options.CreatedAtGte(), options.CreatedAtLte())
 	} else if options.HasCreatedAtGte() {
-		q = q.Where(goqu.C(COLUMN_CREATED_AT).Gte(options.CreatedAtGte()))
+		q = q.Where(COLUMN_CREATED_AT+" >= ?", options.CreatedAtGte())
 	} else if options.HasCreatedAtLte() {
-		q = q.Where(goqu.C(COLUMN_CREATED_AT).Lte(options.CreatedAtLte()))
+		q = q.Where(COLUMN_CREATED_AT+" <= ?", options.CreatedAtLte())
 	}
 
 	if !options.IsCountOnly() {
 		if options.HasLimit() {
-			q = q.Limit(cast.ToUint(options.Limit()))
+			q = q.Limit(options.Limit())
 		}
 
 		if options.HasOffset() {
-			q = q.Offset(cast.ToUint(options.Offset()))
+			q = q.Offset(options.Offset())
 		}
 	}
 
 	if options.HasOrderBy() {
-		sort := lo.Ternary(options.HasSortDirection(), options.SortDirection(), sb.DESC)
-		if strings.EqualFold(sort, sb.ASC) {
-			q = q.Order(goqu.I(options.OrderBy()).Asc())
-		} else {
-			q = q.Order(goqu.I(options.OrderBy()).Desc())
+		sort := "DESC"
+		if options.HasSortDirection() && strings.EqualFold(options.SortDirection(), "ASC") {
+			sort = "ASC"
 		}
-	}
-
-	columns = []any{}
-
-	for _, column := range options.Columns() {
-		columns = append(columns, column)
+		q = q.OrderBy(options.OrderBy(), sort)
 	}
 
 	if options.SoftDeletedIncluded() {
-		return q, columns, nil // soft deleted entityGroups requested specifically
+		q = q.WithSoftDeleted()
+	} else {
+		q = q.Where(COLUMN_SOFT_DELETED_AT+" > ?", carbon.Now(carbon.UTC).ToDateTimeString())
 	}
 
-	softDeleted := goqu.C(COLUMN_SOFT_DELETED_AT).
-		Gt(carbon.Now(carbon.UTC).ToDateTimeString())
-
-	return q.Where(softDeleted), columns, nil
+	return q, nil
 }

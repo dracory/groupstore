@@ -1,10 +1,10 @@
 package groupstore
 
 import (
+	"github.com/dracory/neat/database/schema/constants"
 	"github.com/dromara/carbon/v2"
 	"github.com/gouniverse/dataobject"
 	"github.com/gouniverse/maputils"
-	"github.com/gouniverse/sb"
 	"github.com/gouniverse/uid"
 	"github.com/gouniverse/utils"
 )
@@ -26,7 +26,7 @@ func NewGroup() GroupInterface {
 		SetMemo("").
 		SetCreatedAt(carbon.Now(carbon.UTC).ToDateTimeString(carbon.UTC)).
 		SetUpdatedAt(carbon.Now(carbon.UTC).ToDateTimeString(carbon.UTC)).
-		SetSoftDeletedAt(sb.MAX_DATETIME)
+		SetSoftDeletedAt(constants.MaxSoftDeletedAtDefault)
 
 	err := o.SetMetas(map[string]string{})
 
