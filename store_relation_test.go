@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/dracory/neat/database/schema/constants"
-	"github.com/gouniverse/base/database"
 )
 
 func TestStoreRelationCount(t *testing.T) {
@@ -337,7 +336,7 @@ func TestStoreEntityGroupFindByID(t *testing.T) {
 		t.Fatal("unexpected error:", err)
 	}
 
-	ctx := database.Context(context.Background(), store.DB())
+	ctx := context.Background()
 	err = store.RelationCreate(ctx, entityGroup)
 	if err != nil {
 		t.Error("unexpected error:", err)

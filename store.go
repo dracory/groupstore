@@ -7,9 +7,16 @@ import (
 	"log/slog"
 
 	"github.com/dracory/neat"
+	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	contractsschema "github.com/dracory/neat/contracts/database/schema"
-	"github.com/gouniverse/base/database"
 )
+
+type txContextKey struct{}
+
+// ContextWithTx adds a neat orm.Query transaction to context
+func ContextWithTx(ctx context.Context, tx contractsorm.Query) context.Context {
+	return context.WithValue(ctx, txContextKey{}, tx)
+}
 
 // NewStoreOptions define the options for creating a new block store
 type NewStoreOptions struct {
@@ -185,36 +192,15 @@ func (store *store) logSql(sqlOperationType string, sqlStr string, params ...int
 	}
 }
 
-// toQuerableContext converts the context to a QueryableContext
-func (store *store) toQuerableContext(ctx context.Context) database.QueryableContext {
-	if database.IsQueryableContext(ctx) {
-		return ctx.(database.QueryableContext)
+func (store *store) query(ctx context.Context) contractsorm.Query {
+	if ctx != nil {
+		if tx, ok := ctx.Value(txContextKey{}).(contractsorm.Query); ok && tx != nil {
+			return tx
+		}
 	}
-
-	sqlDB, err := store.db.DB()
-	if err != nil {
-		return database.Context(ctx, nil)
+	q := store.db.Query()
+	if qWithCtx, ok := q.(contractsorm.QueryWithContext); ok && ctx != nil {
+		q = qWithCtx.WithContext(ctx)
 	}
-
-	return database.Context(ctx, sqlDB)
-}
-
-func (store *store) isQueryableContext(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	if database.IsQueryableContext(ctx) && ctx.(database.QueryableContext).Queryable() != nil {
-		return true
-	}
-	return false
-}
-
-func (store *store) execute(ctx context.Context, sqlStr string, args ...any) (sql.Result, error) {
-	qCtx := store.toQuerableContext(ctx)
-	return database.Execute(qCtx, sqlStr, args...)
-}
-
-func (store *store) selectToMapAny(ctx context.Context, sqlStr string, args ...any) ([]map[string]any, error) {
-	qCtx := store.toQuerableContext(ctx)
-	return database.SelectToMapAny(qCtx, sqlStr, args...)
+	return q
 }
