@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
-	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/dromara/carbon/v2"
+	"github.com/gouniverse/base/database"
 )
 
 func (store *store) GroupCount(ctx context.Context, options GroupQueryInterface) (int64, error) {
@@ -17,18 +18,35 @@ func (store *store) GroupCount(ctx context.Context, options GroupQueryInterface)
 
 	options.SetCountOnly(true)
 
-	q, err := store.buildGroupQuery(options)
+	sqlStr, args, err := store.buildGroupQuerySQL(options)
 	if err != nil {
 		return -1, err
 	}
 
-	var count int64
-	err = q.Count(&count)
+	countSQL := "SELECT COUNT(*) AS count FROM (" + sqlStr + ") AS count_table"
+	store.logSql("select", countSQL, args...)
+
+	qCtx := store.toQuerableContext(ctx)
+	mapped, err := database.SelectToMapString(qCtx, countSQL, args...)
 	if err != nil {
 		return -1, err
 	}
 
-	return count, nil
+	if len(mapped) < 1 {
+		return 0, nil
+	}
+
+	countStr := mapped[0]["count"]
+	if countStr == "" {
+		countStr = mapped[0]["COUNT(*)"]
+	}
+
+	i, err := strconv.ParseInt(countStr, 10, 64)
+	if err != nil {
+		return 0, nil
+	}
+
+	return i, nil
 }
 
 func (store *store) GroupCreate(ctx context.Context, group GroupInterface) error {
@@ -44,12 +62,21 @@ func (store *store) GroupCreate(ctx context.Context, group GroupInterface) error
 
 	data := group.Data()
 
-	updateData := make(map[string]any)
+	cols := []string{}
+	placeholders := []string{}
+	args := []any{}
+
 	for k, v := range data {
-		updateData[k] = v
+		cols = append(cols, k)
+		placeholders = append(placeholders, "?")
+		args = append(args, v)
 	}
 
-	err := store.db.Query().Table(store.groupTableName).Create(updateData)
+	queryStr := "INSERT INTO " + store.groupTableName + " (" + strings.Join(cols, ", ") + ") VALUES (" + strings.Join(placeholders, ", ") + ")"
+	store.logSql("insert", queryStr, args...)
+
+	qCtx := store.toQuerableContext(ctx)
+	_, err := database.Execute(qCtx, queryStr, args...)
 	if err != nil {
 		return err
 	}
@@ -75,11 +102,11 @@ func (store *store) GroupDeleteByID(ctx context.Context, id string) error {
 		return errors.New("group id is empty")
 	}
 
-	_, err := store.db.Query().
-		Table(store.groupTableName).
-		Where(COLUMN_ID+" = ?", id).
-		Delete()
+	queryStr := "DELETE FROM " + store.groupTableName + " WHERE " + COLUMN_ID + " = ?"
+	store.logSql("delete", queryStr, id)
 
+	qCtx := store.toQuerableContext(ctx)
+	_, err := database.Execute(qCtx, queryStr, id)
 	return err
 }
 
@@ -131,34 +158,22 @@ func (store *store) GroupList(ctx context.Context, query GroupQueryInterface) ([
 		return []GroupInterface{}, errors.New("at group list > group query is nil")
 	}
 
-	q, err := store.buildGroupQuery(query)
+	sqlStr, args, err := store.buildGroupQuerySQL(query)
 	if err != nil {
 		return []GroupInterface{}, err
 	}
 
-	var rows []map[string]any
-	err = q.Get(&rows)
+	store.logSql("select", sqlStr, args...)
+
+	qCtx := store.toQuerableContext(ctx)
+	modelMaps, err := database.SelectToMapString(qCtx, sqlStr, args...)
 	if err != nil {
 		return []GroupInterface{}, err
 	}
 
-	list := make([]GroupInterface, 0, len(rows))
-	for _, row := range rows {
-		data := make(map[string]string)
-		for k, v := range row {
-			if v == nil {
-				data[k] = ""
-				continue
-			}
-			if s, ok := v.(string); ok {
-				data[k] = s
-			} else if b, ok := v.([]byte); ok {
-				data[k] = string(b)
-			} else {
-				data[k] = fmt.Sprintf("%v", v)
-			}
-		}
-		list = append(list, NewGroupFromExistingData(data))
+	list := make([]GroupInterface, 0, len(modelMaps))
+	for _, modelMap := range modelMaps {
+		list = append(list, NewGroupFromExistingData(modelMap))
 	}
 
 	return list, nil
@@ -202,16 +217,19 @@ func (store *store) GroupUpdate(ctx context.Context, group GroupInterface) error
 		return nil
 	}
 
-	updateData := make(map[string]any)
+	cols := []string{}
+	args := []any{}
 	for k, v := range dataChanged {
-		updateData[k] = v
+		cols = append(cols, k+" = ?")
+		args = append(args, v)
 	}
 
-	_, err := store.db.Query().
-		Table(store.groupTableName).
-		Where(COLUMN_ID+" = ?", group.ID()).
-		Update(updateData)
+	args = append(args, group.ID())
+	queryStr := "UPDATE " + store.groupTableName + " SET " + strings.Join(cols, ", ") + " WHERE " + COLUMN_ID + " = ?"
+	store.logSql("update", queryStr, args...)
 
+	qCtx := store.toQuerableContext(ctx)
+	_, err := database.Execute(qCtx, queryStr, args...)
 	if err != nil {
 		return err
 	}
@@ -221,81 +239,80 @@ func (store *store) GroupUpdate(ctx context.Context, group GroupInterface) error
 	return nil
 }
 
-func (store *store) buildGroupQuery(options GroupQueryInterface) (contractsorm.Query, error) {
+func (store *store) buildGroupQuerySQL(options GroupQueryInterface) (string, []any, error) {
 	if options == nil {
-		return nil, errors.New("group options is nil")
+		return "", nil, errors.New("group options is nil")
 	}
 
 	if err := options.Validate(); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	q := store.db.Query().Table(store.groupTableName)
-
+	cols := "*"
 	if len(options.Columns()) > 0 {
-		q = q.Select(options.Columns())
+		cols = strings.Join(options.Columns(), ", ")
 	}
+
+	whereClauses := []string{}
+	args := []any{}
 
 	if options.HasID() {
-		q = q.Where(COLUMN_ID+" = ?", options.ID())
+		whereClauses = append(whereClauses, COLUMN_ID+" = ?")
+		args = append(args, options.ID())
 	}
 
 	if options.HasIDIn() {
-		inClause := COLUMN_ID + " IN ("
-		placeholders := make([]any, 0, len(options.IDIn()))
+		placeholders := make([]string, len(options.IDIn()))
 		for i, id := range options.IDIn() {
-			if i > 0 {
-				inClause += ", "
-			}
-			inClause += "?"
-			placeholders = append(placeholders, id)
+			placeholders[i] = "?"
+			args = append(args, id)
 		}
-		inClause += ")"
-		q = q.Where(inClause, placeholders...)
+		whereClauses = append(whereClauses, COLUMN_ID+" IN ("+strings.Join(placeholders, ", ")+")")
 	}
 
 	if options.HasStatus() {
-		q = q.Where(COLUMN_STATUS+" = ?", options.Status())
+		whereClauses = append(whereClauses, COLUMN_STATUS+" = ?")
+		args = append(args, options.Status())
 	}
 
 	if options.HasStatusIn() {
-		inClause := COLUMN_STATUS + " IN ("
-		placeholders := make([]any, 0, len(options.StatusIn()))
+		placeholders := make([]string, len(options.StatusIn()))
 		for i, status := range options.StatusIn() {
-			if i > 0 {
-				inClause += ", "
-			}
-			inClause += "?"
-			placeholders = append(placeholders, status)
+			placeholders[i] = "?"
+			args = append(args, status)
 		}
-		inClause += ")"
-		q = q.Where(inClause, placeholders...)
+		whereClauses = append(whereClauses, COLUMN_STATUS+" IN ("+strings.Join(placeholders, ", ")+")")
 	}
 
 	if options.HasHandle() {
-		q = q.Where(COLUMN_HANDLE+" = ?", options.Handle())
+		whereClauses = append(whereClauses, COLUMN_HANDLE+" = ?")
+		args = append(args, options.Handle())
 	}
 
 	if options.HasTitleLike() {
-		q = q.Where(COLUMN_TITLE+" LIKE ?", "%"+options.TitleLike()+"%")
+		whereClauses = append(whereClauses, COLUMN_TITLE+" LIKE ?")
+		args = append(args, "%"+options.TitleLike()+"%")
 	}
 
 	if options.HasCreatedAtGte() && options.HasCreatedAtLte() {
-		q = q.Where(COLUMN_CREATED_AT+" >= ? AND "+COLUMN_CREATED_AT+" <= ?", options.CreatedAtGte(), options.CreatedAtLte())
+		whereClauses = append(whereClauses, COLUMN_CREATED_AT+" >= ? AND "+COLUMN_CREATED_AT+" <= ?")
+		args = append(args, options.CreatedAtGte(), options.CreatedAtLte())
 	} else if options.HasCreatedAtGte() {
-		q = q.Where(COLUMN_CREATED_AT+" >= ?", options.CreatedAtGte())
+		whereClauses = append(whereClauses, COLUMN_CREATED_AT+" >= ?")
+		args = append(args, options.CreatedAtGte())
 	} else if options.HasCreatedAtLte() {
-		q = q.Where(COLUMN_CREATED_AT+" <= ?", options.CreatedAtLte())
+		whereClauses = append(whereClauses, COLUMN_CREATED_AT+" <= ?")
+		args = append(args, options.CreatedAtLte())
 	}
 
-	if !options.IsCountOnly() {
-		if options.HasLimit() {
-			q = q.Limit(options.Limit())
-		}
+	if !options.SoftDeletedIncluded() {
+		whereClauses = append(whereClauses, COLUMN_SOFT_DELETED_AT+" > ?")
+		args = append(args, carbon.Now(carbon.UTC).ToDateTimeString())
+	}
 
-		if options.HasOffset() {
-			q = q.Offset(options.Offset())
-		}
+	sqlStr := "SELECT " + cols + " FROM " + store.groupTableName
+	if len(whereClauses) > 0 {
+		sqlStr += " WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
 	if options.HasOrderBy() {
@@ -303,14 +320,17 @@ func (store *store) buildGroupQuery(options GroupQueryInterface) (contractsorm.Q
 		if options.HasSortDirection() && strings.EqualFold(options.SortDirection(), "ASC") {
 			sort = "ASC"
 		}
-		q = q.OrderBy(options.OrderBy(), sort)
+		sqlStr += " ORDER BY " + options.OrderBy() + " " + sort
 	}
 
-	if options.SoftDeletedIncluded() {
-		q = q.WithSoftDeleted()
-	} else {
-		q = q.Where(COLUMN_SOFT_DELETED_AT+" > ?", carbon.Now(carbon.UTC).ToDateTimeString())
+	if !options.IsCountOnly() {
+		if options.HasLimit() {
+			sqlStr += fmt.Sprintf(" LIMIT %d", options.Limit())
+		}
+		if options.HasOffset() {
+			sqlStr += fmt.Sprintf(" OFFSET %d", options.Offset())
+		}
 	}
 
-	return q, nil
+	return sqlStr, args, nil
 }
