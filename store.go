@@ -198,3 +198,23 @@ func (store *store) toQuerableContext(ctx context.Context) database.QueryableCon
 
 	return database.Context(ctx, sqlDB)
 }
+
+func (store *store) isQueryableContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if database.IsQueryableContext(ctx) && ctx.(database.QueryableContext).Queryable() != nil {
+		return true
+	}
+	return false
+}
+
+func (store *store) execute(ctx context.Context, sqlStr string, args ...any) (sql.Result, error) {
+	qCtx := store.toQuerableContext(ctx)
+	return database.Execute(qCtx, sqlStr, args...)
+}
+
+func (store *store) selectToMapAny(ctx context.Context, sqlStr string, args ...any) ([]map[string]any, error) {
+	qCtx := store.toQuerableContext(ctx)
+	return database.SelectToMapAny(qCtx, sqlStr, args...)
+}

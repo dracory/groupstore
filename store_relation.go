@@ -8,6 +8,7 @@ import (
 
 	contractsorm "github.com/dracory/neat/contracts/database/orm"
 	"github.com/dromara/carbon/v2"
+	"github.com/spf13/cast"
 )
 
 func (store *store) RelationCount(ctx context.Context, options RelationQueryInterface) (int64, error) {
@@ -20,6 +21,20 @@ func (store *store) RelationCount(ctx context.Context, options RelationQueryInte
 	q, err := store.buildRelationQuery(options)
 	if err != nil {
 		return -1, err
+	}
+
+	if store.isQueryableContext(ctx) {
+		sqlStr := q.ToRawSql().Count()
+		rows, errSelect := store.selectToMapAny(ctx, sqlStr)
+		if errSelect != nil {
+			return -1, errSelect
+		}
+		if len(rows) > 0 {
+			for _, v := range rows[0] {
+				return cast.ToInt64(v), nil
+			}
+		}
+		return 0, nil
 	}
 
 	var count int64
@@ -76,6 +91,16 @@ func (store *store) RelationCreate(ctx context.Context, relation RelationInterfa
 		updateData[k] = v
 	}
 
+	if store.isQueryableContext(ctx) {
+		sqlStr := store.db.Query().Table(store.groupEntityRelationTableName).ToRawSql().Create(updateData)
+		_, err := store.execute(ctx, sqlStr)
+		if err != nil {
+			return err
+		}
+		relation.MarkAsNotDirty()
+		return nil
+	}
+
 	err = store.db.Query().Table(store.groupEntityRelationTableName).Create(updateData)
 	if err != nil {
 		return err
@@ -100,6 +125,15 @@ func (store *store) RelationDeleteByID(ctx context.Context, id string) error {
 	}
 	if id == "" {
 		return errors.New("relation id is empty")
+	}
+
+	if store.isQueryableContext(ctx) {
+		sqlStr := store.db.Query().
+			Table(store.groupEntityRelationTableName).
+			Where(COLUMN_ID+" = ?", id).
+			ToRawSql().Delete()
+		_, err := store.execute(ctx, sqlStr)
+		return err
 	}
 
 	_, err := store.db.Query().
@@ -181,9 +215,18 @@ func (store *store) RelationList(ctx context.Context, query RelationQueryInterfa
 	}
 
 	var rows []map[string]any
-	err = q.Get(&rows)
-	if err != nil {
-		return []RelationInterface{}, err
+	if store.isQueryableContext(ctx) {
+		sqlStr := q.ToRawSql().Get(&rows)
+		var errSelect error
+		rows, errSelect = store.selectToMapAny(ctx, sqlStr)
+		if errSelect != nil {
+			return []RelationInterface{}, errSelect
+		}
+	} else {
+		err = q.Get(&rows)
+		if err != nil {
+			return []RelationInterface{}, err
+		}
 	}
 
 	list := make([]RelationInterface, 0, len(rows))
@@ -249,6 +292,19 @@ func (store *store) RelationUpdate(ctx context.Context, relation RelationInterfa
 	updateData := make(map[string]any)
 	for k, v := range dataChanged {
 		updateData[k] = v
+	}
+
+	if store.isQueryableContext(ctx) {
+		sqlStr := store.db.Query().
+			Table(store.groupEntityRelationTableName).
+			Where(COLUMN_ID+" = ?", relation.ID()).
+			ToRawSql().Update(updateData)
+		_, err := store.execute(ctx, sqlStr)
+		if err != nil {
+			return err
+		}
+		relation.MarkAsNotDirty()
+		return nil
 	}
 
 	_, err := store.db.Query().
